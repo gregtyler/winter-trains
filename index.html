@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+  <head>
+    <meta charset="utf-8">
+    <title>Winter Timetable Generator</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.1.3/css/bootstrap.min.css" integrity="sha384-MCw98/SFnGE8fJT3GXwEOngsV7Zt27NXFoaoApmYm81iuXoPkFOJwJ8ERdknLPMO" crossorigin="anonymous">
+    <style>
+      h1 {
+        margin-top: 1rem;
+      }
+      
+      .preview-table {
+        font-size: 12px;
+      }
+
+      .btn-group {
+        flex-wrap: wrap;
+      }
+
+      .cell {
+        border-left: 1px solid transparent;
+        border-right: 1px solid transparent;
+        text-align: center;
+      }
+      
+      .cell-connection {
+        font-style: italic;
+      }
+
+      .cell-header {
+        user-select: none;
+      }
+
+      .cell-active {
+        background-color: lightgoldenrodyellow;
+      }
+
+      .cell-ignored {
+        text-decoration: line-through;
+        color: #999;
+      }
+
+      .cell-invalid {
+        background-color: red;
+      }
+
+      .cell-pattern-match {
+        background-color: lightblue;
+      }
+
+      .cell-border-left { border-left-color: #CCC }
+      .cell-border-right { border-right-color: #CCC }
+    </style>
+  </head>
+  <body>
+    <template id="sub-table">
+      <section>
+        <h2>{{ table.name }}</h2>
+        <details>
+          <summary>Terminal stations</summary>
+          <div class="btn-group btn-group-toggle" data-toggle="buttons">
+            <label
+              v-for="station in allStations"
+              :class="{btn: true, 'btn-sm': true, 'btn-secondary': true, active: table.terminalStations.includes(station.id), disabled: station.id === table.target}"
+            >
+              <input
+                type="checkbox"
+                :checked="table.terminalStations.includes(station.id)"
+                :disabled="station.id === table.target"
+                @change="toggleTerminalStation(station.id)"
+              />
+              {{ station.name }}
+            </label>
+          </div>
+        </details>
+        <div class="table-responsive">
+          <table class="table table-sm preview-table">
+            <thead>
+              <tr>
+                <th colspan="2">
+                  <button type="button" class="btn btn-sm btn-warning btn-block" @click="resetRange">
+                    Reset range
+                  </button>
+                </th>
+                <th
+                  v-for="(service, index) in table.services"
+                  :class="{
+                    cell: true,
+                    'cell-header': true,
+                    'cell-active': index >= table.start && index <= table.end,
+                    'cell-border-left': table.start !== -1 && (index - table.start) % (table.end - table.start + 1) === 0,
+                    'cell-border-right': table.start !== -1 && (index - table.start) % (table.end - table.start + 1) === table.end - table.start,
+                  }"
+                  @mousedown="setStart(index)"
+                  @mousemove="$event.buttons ? setEnd(index) : null"
+                  @mouseup="setEnd(index)"
+                >
+                  {{ this.selected }}
+                  {{ index }}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(station, index) in table.bank">
+                <th class="text-nowrap">{{ station.name }}</th>
+                <th>{{ station.type }}</th>
+                <td
+                  v-for="(service, serviceIndex) in table.services"
+                  :class="{
+                    cell: true,
+                    'cell-connection': service.times[index].isConnection,
+                    'cell-active': serviceIndex >= table.start && serviceIndex <= table.end,
+                    'cell-ignored': service.times[index].isIgnored,
+                    'cell-invalid': service.times[index].isInvalid,
+                    'cell-pattern-match': service.isPatternMatching,
+                    'cell-border-left': table.start !== -1 && (serviceIndex - table.start) % (table.end - table.start + 1) === 0,
+                    'cell-border-right': table.start !== -1 && (serviceIndex - table.start) % (table.end - table.start + 1) === table.end - table.start + 1,
+                  }"
+                  @click="toggleTimeIgnore(serviceIndex, index)"
+                >
+                  {{ service.times[index].vis }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </template>
+
+    <template id="download-button">
+      <button
+        type="button"
+        @click="download"
+        class="btn btn-primary"
+        style="position: fixed; right: 1rem; bottom: 1rem; transform: rotate(180deg);"
+      >
+        ⇪
+      </button>
+    </template>
+
+    <template id="select-tables">
+      <div>
+        <div
+          v-for="station in bank"
+          :key="station.id"
+          class="form-check"
+        >
+          <label>
+            <input
+              type="checkbox"
+              :checked="selected.includes(station.id)"
+              class="form-check-input"
+              @change="toggleSelected(station.id)"
+            />
+            {{ station.name }} ({{ station.type }})
+          </label>
+        </div>
+        <button
+          type="button"
+          class="btn btn-primary"
+          @click="saveTables"
+        >Extract tables</button>
+      </div>
+    </template>
+
+    <div id="app" class="container-fluid">
+      <template v-if="tables.length">
+        <button type="button" class="btn btn-secondary" style="float: right;" @click="restart">
+          Restart
+        </button>
+        <h1 class="page-title">Extract timetables</h1>
+        <div class="alert alert-info">
+          <p>
+            Click-and-drag the numbers above each column to identify the key pattern. The selected key pattern will be included in the output timetable, as will the last instance of the pattern.
+          </p>
+          <p>
+            Cells highlighted in <span class="cell-pattern-match">blue</span> will not be included in the timetable, instead replaced by a "then every hour until" message.
+          </p>
+          <p>
+            You can click a cell to ignore it from pattern matching (to avoid outliers). If an ignored cell still doesn't match a pattern, it will still be included in the output.
+          </p>
+        </div>
+        <sub-table
+          v-for="table in tables"
+          :key="table.id"
+          :id="table.id"
+        ></sub-table>
+        <download-button :tables="tables" :filename="filename" />
+      </template>
+      <template v-else-if="bank.length">
+        <h1>Please select which stations to extract tables for</h1>
+        <select-tables :bank="bank"></select-tables>
+      </template>
+      <template v-else>
+        <div class="row justify-content-center" style="margin-top: 3rem">
+          <div class="col-sm-6 text-center">
+            <h1>Winter timetable generator</h1>
+            <p>Upload a CSV file below to continue.</p>
+            <p>CSV files should contain a column of stations, then a column indicating whether the time is arrival (a) or departure (d). The remaining columns should all be services, with blank cells where services don't call.</p>
+            <p>No other information should be included, or the application won't work.</p>
+            <div v-if="error" class="alert alert-danger">
+              <h4>An error occurred whilst uploading the selected file</h4>
+              <p>{{ error.toString() }}</p>
+            </div>
+            <label class="btn btn-primary btn-lg">
+              Upload
+              <input type="file" hidden @change="upload" />
+            </label>
+            <p>
+              <small class="text-muted">Version 1.0.3</small>
+            </p>
+          </div>
+        </div>
+      </template>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/vue/dist/vue.js"></script>
+    <script src="https://unpkg.com/vuex@3.0.1/dist/vuex.js"></script>
+    <script src="jszip.min.js"></script>
+    <script src="store.js"></script>
+    <script src="main.js"></script>
+  </body>
+</html>
